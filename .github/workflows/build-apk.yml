@@ -1,0 +1,74 @@
+name: build-apk
+
+on:
+  push:
+    paths:
+      - ".github/workflows/build-apk.yml"
+      - "xflutter/**"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "version: flutter ref"
+        required: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: get version
+        id: get-version
+        run: |
+          if [ -z "${{ github.event.inputs.version }}" ]; then
+            echo "::set-output name=version::stable"
+          else
+            echo "::set-output name=version::${{ github.event.inputs.version }}"
+          fi
+
+      # https://github.com/CodeGather/flutter_ali_auth/blob/0ab734cb7561a31091b7c59bb1a6d9450f6cf8a5/.github/workflows/actions_analysis.yml#L16
+      - name: Clone Flutter repository with stable channel
+        uses: actions/checkout@v2
+        with:
+          repository: "flutter/flutter"
+          ref: "${{ steps.get-version.outputs.version }}"
+          path: "flutter"
+          fetch-depth: 0
+
+      - name: Add Flutter to the PATH for Unix
+        run: echo "$GITHUB_WORKSPACE/flutter/bin" >> $GITHUB_PATH
+
+      - name: Run Flutter doctor
+        run: flutter doctor -v
+
+      - uses: actions/checkout@v2
+        with:
+          path: "xflutter"
+
+      - name: flutter pub get
+        run: |
+          cd xflutter/app
+          flutter pub get
+
+      - name: flutter build apk
+        run: |
+          cd xflutter/app
+          flutter build apk --target-platform android-arm,android-arm64
+          mv build/app/outputs/flutter-apk/app-release.apk build/app/outputs/flutter-apk/normal-${{ steps.get-version.outputs.version }}.apk
+
+      - name: upload normal apk
+        uses: actions/upload-artifact@v2
+        with:
+          name: normal-${{ steps.get-version.outputs.version }}
+          path: xflutter/app/build/app/outputs/flutter-apk/normal-${{ steps.get-version.outputs.version }}.apk
+
+      - name: flutter build obfuscated apk
+        run: |
+          cd xflutter/app
+          flutter build apk --target-platform android-arm,android-arm64 --obfuscate --split-debug-info=debuginfo
+          mv build/app/outputs/flutter-apk/app-release.apk build/app/outputs/flutter-apk/obfuscated-${{ steps.get-version.outputs.version }}.apk
+
+      - name: upload obfuscated apk
+        uses: actions/upload-artifact@v2
+        with:
+          name: obfuscated-${{ steps.get-version.outputs.version }}
+          path: xflutter/app/build/app/outputs/flutter-apk/obfuscated-${{ steps.get-version.outputs.version }}.apk

@@ -1,0 +1,130 @@
+name: build-engine
+
+on:
+  push:
+    paths:
+      - ".github/workflows/build-engine.yml"
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "ref of flutter/flutter"
+        required: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: get latest
+        id: get-latest
+        uses: actions/github-script@v3
+        with:
+          github-token: ${{secrets.GITHUB_TOKEN}}
+          result-encoding: string
+          script: |
+            const query = `{
+                repository(owner: "flutter", name: "flutter") {
+                refs(refPrefix: "refs/tags/", first: 1, orderBy: {field: TAG_COMMIT_DATE, direction: DESC}) {
+                  edges {
+                  node {
+                    name
+                  }
+                  }
+                }
+                }
+              }`;
+            const result = await github.graphql(query)
+            if (!result.repository.refs.edges[0].node.name || result.repository.refs.edges[0].node.name === ''){
+              throw('empty tag')
+            }
+            return result.repository.refs.edges[0].node.name
+
+      - name: get engine version
+        id: get-engine-version
+        run: |
+          echo "ref ${{steps.get-latest.outputs.result}}"
+          echo "::set-output name=engine_version::$(curl -s https://raw.githubusercontent.com/flutter/flutter/${{steps.get-latest.outputs.result}}/bin/internal/engine.version)"
+
+      - name: debug
+        run: |
+          echo "engine.version ${{steps.get-engine-version.outputs.engine_version}}"
+
+      - name: Set up Python 2
+        uses: actions/setup-python@v2
+        with:
+          python-version: "2.7"
+
+      - name: get depot tools
+        run: |
+          git clone --depth 1 https://chromium.googlesource.com/chromium/tools/depot_tools.git
+
+      - name: sync
+        run: |
+          export PATH=$PATH:$(pwd)/depot_tools
+
+          mkdir engine
+          cd engine
+
+          cat > .gclient << EOF
+          solutions = [
+            {
+              "managed": False,
+              "name": "src/flutter",
+              "url": "https://github.com/flutter/engine.git@${{steps.get-engine-version.outputs.engine_version}}",
+              "custom_deps": {},
+              "deps_file": "DEPS",
+              "safesync_url": "",
+            },
+          ]
+          EOF
+
+          gclient sync -D --no-history -v
+          # gclient sync -D --with_branch_heads --with_tags -v
+          (cd src/flutter && git -c pager.diff=false log -1)
+
+      - name: debug
+        run: |
+          for f in $(find . -name ".git"); do (cd $(echo "$f" | sed 's/\/\.git$//') && echo "$f" && git -c pager.diff=false log -1); done;
+
+      # - name: target commit
+      #   run: |
+      #     export PATH=$PATH:$(pwd)/depot_tools
+
+      #     cd engine
+
+      #     (cd src/flutter && git reset --hard ${{steps.get-engine-version.outputs.engine_version}})
+      #     gclient sync -D --with_branch_heads --with_tags --force -v
+
+      # - name: debug
+      #   run: |
+      #     for f in $(find . -name ".git"); do (cd $(echo "$f" | sed 's/\/\.git$//') && echo "$f" && git -c pager.diff=false log -1); done;
+
+      - name: arm
+        run: |
+          export PATH=$PATH:$(pwd)/depot_tools
+
+          cd engine/src
+
+          ./flutter/tools/gn --unoptimized --no-stripped --full-dart-sdk --android --runtime-mode release --android-cpu arm
+          ninja -C out/android_release_unopt -j $(nproc)
+
+      - name: upload arm
+        uses: actions/upload-artifact@v2
+        with:
+          name: arm
+          path: engine/src/out/android_release_unopt/libflutter.so
+
+      - name: arm64
+        run: |
+          export PATH=$PATH:$(pwd)/depot_tools
+
+          cd engine/src
+
+          ./flutter/tools/gn --unoptimized --no-stripped --full-dart-sdk --android --runtime-mode release --android-cpu arm64
+          ninja -C out/android_release_unopt_arm64 -j $(nproc)
+
+      - name: upload arm64
+        uses: actions/upload-artifact@v2
+        with:
+          name: arm64
+          path: engine/src/out/android_release_unopt_arm64/libflutter.so
